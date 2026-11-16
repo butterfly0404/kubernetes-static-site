@@ -51,6 +51,17 @@ pipeline {
                     )
                 ]) {
                     powershell '''
+                        Write-Output "Docker username received: $env:DOCKER_USER"
+                        Write-Output "Docker token length: $($env:DOCKER_TOKEN.Length)"
+
+                        if ([string]::IsNullOrWhiteSpace($env:DOCKER_USER)) {
+                            throw "Docker username is missing"
+                        }
+
+                        if ([string]::IsNullOrWhiteSpace($env:DOCKER_TOKEN)) {
+                            throw "Docker token is missing"
+                        }
+
                         $psi = New-Object System.Diagnostics.ProcessStartInfo
                         $psi.FileName = "docker.exe"
                         $psi.Arguments = "login --username $env:DOCKER_USER --password-stdin"
@@ -95,6 +106,8 @@ pipeline {
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker push failed"
                         }
+
+                        Write-Output "Docker image pushed successfully!"
                     '''
                 }
             }
