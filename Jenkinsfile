@@ -72,7 +72,7 @@ pipeline {
                         $config = if ($env:DOCKER_CONFIG) {
                             Join-Path $env:DOCKER_CONFIG "config.json"
                         } else {
-                            Join-Path $env:USERPROFILE ".docker\config.json"
+                            Join-Path $env:USERPROFILE ".docker/config.json"
                         }
 
                         Write-Output "Docker config path: $config"
@@ -103,7 +103,7 @@ pipeline {
                         $bytes = $null
                         $hash = $null
 
-                        # Docker Hub login
+                        # Docker Hub login using password-stdin
                         $psi = New-Object System.Diagnostics.ProcessStartInfo
                         $psi.FileName = "docker.exe"
                         $psi.Arguments = "login --username $env:DOCKER_USER --password-stdin"
@@ -114,6 +114,7 @@ pipeline {
 
                         $process = New-Object System.Diagnostics.Process
                         $process.StartInfo = $psi
+
                         [void]$process.Start()
 
                         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -138,14 +139,16 @@ pipeline {
                         Write-Output "Docker Hub login successful!"
 
                         # Tag image
-                        docker tag static-website:latest "$($env:DOCKER_USER)/static-website:$($env:BUILD_NUMBER)"
+                        $image = "$($env:DOCKER_USER)/static-website:$env:BUILD_NUMBER"
+
+                        docker tag static-website:latest $image
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker tag failed"
                         }
 
                         # Push image
-                        docker push "$($env:DOCKER_USER)/static-website:$($env:BUILD_NUMBER)"
+                        docker push $image
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker push failed"
@@ -172,7 +175,9 @@ pipeline {
                         throw "Service configuration failed"
                     }
 
-                    kubectl set image deployment/static-website static-website="alishri/static-website:$env:BUILD_NUMBER"
+                    $image = "alishri/static-website:$env:BUILD_NUMBER"
+
+                    kubectl set image deployment/static-website static-website=$image
 
                     if ($LASTEXITCODE -ne 0) {
                         throw "Image update failed"
