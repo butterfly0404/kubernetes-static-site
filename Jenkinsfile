@@ -59,102 +59,101 @@ pipeline {
                     )
                 ]) {
                     powershell '''
-                        Write-Output "===== JENKINS DOCKER ENVIRONMENT ====="
+                        $tempDockerConfig = Join-Path $env:TEMP ("jenkins-docker-" + [guid]::NewGuid().ToString("N"))
 
-                        Write-Output "Docker username: $env:DOCKER_USER"
-                        Write-Output "USERPROFILE: $env:USERPROFILE"
-                        Write-Output "DOCKER_CONFIG: $env:DOCKER_CONFIG"
-                        Write-Output "DOCKER_CONTEXT: $env:DOCKER_CONTEXT"
+                        try {
+                            # Create a clean Docker configuration
+                            New-Item -ItemType Directory -Path $tempDockerConfig -Force | Out-Null
 
-                        Write-Output "Docker context:"
-                        docker context show
+                            $configFile = Join-Path $tempDockerConfig "config.json"
 
-                        $config = if ($env:DOCKER_CONFIG) {
-                            Join-Path $env:DOCKER_CONFIG "config.json"
-                        } else {
-                            Join-Path $env:USERPROFILE ".docker/config.json"
+                            [System.IO.File]::WriteAllText(
+                                $configFile,
+                                '{"auths":{}}',
+                                (New-Object System.Text.UTF8Encoding($false))
+                            )
+
+                            Write-Output "===== DOCKER DIAGNOSTICS ====="
+                            Write-Output "Docker username: $env:DOCKER_USER"
+                            Write-Output "Temporary Docker config created"
+                            Write-Output "Docker context: desktop-linux"
+                            Write-Output "Token length: $($env:DOCKER_TOKEN.Length)"
+
+                            # Calculate safe token fingerprint
+                            $sha = [System.Security.Cryptography.SHA256]::Create()
+                            $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:DOCKER_TOKEN)
+
+                            $hash = [BitConverter]::ToString(
+                                $sha.ComputeHash($bytes)
+                            ).Replace("-", "")
+
+                            Write-Output "JENKINS TOKEN FINGERPRINT: $hash"
+
+                            $sha.Dispose()
+                            $bytes = $null
+                            $hash = $null
+
+                            # Docker login using temporary configuration
+                            $psi = New-Object System.Diagnostics.ProcessStartInfo
+                            $psi.FileName = "docker.exe"
+                            $psi.Arguments = "--config `"$tempDockerConfig`" --context desktop-linux login --username $env:DOCKER_USER --password-stdin"
+                            $psi.UseShellExecute = $false
+                            $psi.RedirectStandardInput = $true
+                            $psi.RedirectStandardOutput = $true
+                            $psi.RedirectStandardError = $true
+
+                            $process = New-Object System.Diagnostics.Process
+                            $process.StartInfo = $psi
+
+                            [void]$process.Start()
+
+                            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                            $stderrTask = $process.StandardError.ReadToEndAsync()
+
+                            $process.StandardInput.WriteLine($env:DOCKER_TOKEN)
+                            $process.StandardInput.Close()
+
+                            $process.WaitForExit()
+
+                            $stdout = $stdoutTask.Result
+                            $stderr = $stderrTask.Result
+
+                            if ($stdout) {
+                                Write-Output $stdout
+                            }
+
+                            if ($process.ExitCode -ne 0) {
+                                throw "Docker login failed: $stderr"
+                            }
+
+                            Write-Output "Docker Hub login successful!"
+
+                            # Tag image
+                            $image = "$($env:DOCKER_USER)/static-website:$env:BUILD_NUMBER"
+
+                            docker tag static-website:latest $image
+
+                            if ($LASTEXITCODE -ne 0) {
+                                throw "Docker tag failed"
+                            }
+
+                            # Push using the same temporary configuration
+                            docker --config $tempDockerConfig --context desktop-linux push $image
+
+                            if ($LASTEXITCODE -ne 0) {
+                                throw "Docker push failed"
+                            }
+
+                            Write-Output "Docker image pushed successfully!"
                         }
+                        finally {
+                            # Remove temporary configuration and credentials
+                            if (Test-Path $tempDockerConfig) {
+                                Remove-Item $tempDockerConfig -Recurse -Force
+                            }
 
-                        Write-Output "Docker config path: $config"
-
-                        if (Test-Path $config) {
-                            $json = Get-Content $config -Raw | ConvertFrom-Json
-
-                            Write-Output "Credential store: $($json.credsStore)"
-                            Write-Output "Credential helpers: $($json.credHelpers | ConvertTo-Json -Compress)"
-                        } else {
-                            Write-Output "Docker config file not found"
+                            $env:DOCKER_TOKEN = $null
                         }
-
-                        Write-Output "===== END ENVIRONMENT CHECK ====="
-
-                        # Safe credential diagnostics
-                        Write-Output "Docker token length: $($env:DOCKER_TOKEN.Length)"
-
-                        $sha = [System.Security.Cryptography.SHA256]::Create()
-                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:DOCKER_TOKEN)
-                        $hash = [BitConverter]::ToString(
-                            $sha.ComputeHash($bytes)
-                        ).Replace("-", "")
-
-                        Write-Output "JENKINS TOKEN FINGERPRINT: $hash"
-
-                        $sha.Dispose()
-                        $bytes = $null
-                        $hash = $null
-
-                        # Docker Hub login using password-stdin
-                        $psi = New-Object System.Diagnostics.ProcessStartInfo
-                        $psi.FileName = "docker.exe"
-                        $psi.Arguments = "login --username $env:DOCKER_USER --password-stdin"
-                        $psi.UseShellExecute = $false
-                        $psi.RedirectStandardInput = $true
-                        $psi.RedirectStandardOutput = $true
-                        $psi.RedirectStandardError = $true
-
-                        $process = New-Object System.Diagnostics.Process
-                        $process.StartInfo = $psi
-
-                        [void]$process.Start()
-
-                        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-                        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-                        $process.StandardInput.WriteLine($env:DOCKER_TOKEN)
-                        $process.StandardInput.Close()
-
-                        $process.WaitForExit()
-
-                        $stdout = $stdoutTask.Result
-                        $stderr = $stderrTask.Result
-
-                        if ($stdout) {
-                            Write-Output $stdout
-                        }
-
-                        if ($process.ExitCode -ne 0) {
-                            throw "Docker login failed: $stderr"
-                        }
-
-                        Write-Output "Docker Hub login successful!"
-
-                        # Tag image
-                        $image = "$($env:DOCKER_USER)/static-website:$env:BUILD_NUMBER"
-
-                        docker tag static-website:latest $image
-
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Docker tag failed"
-                        }
-
-                        # Push image
-                        docker push $image
-
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Docker push failed"
-                        }
-
-                        Write-Output "Docker image pushed successfully!"
                     '''
                 }
             }
