@@ -62,7 +62,20 @@ pipeline {
                         $tempDockerConfig = Join-Path $env:TEMP ("jenkins-docker-" + [guid]::NewGuid().ToString("N"))
 
                         try {
-                            # Create a clean Docker configuration
+                            # Get the actual Docker Desktop engine endpoint
+                            $dockerHost = docker context inspect desktop-linux --format "{{.Endpoints.docker.Host}}"
+
+                            if ($LASTEXITCODE -ne 0 -or !$dockerHost) {
+                                throw "Could not retrieve Docker Desktop endpoint"
+                            }
+
+                            $dockerHost = $dockerHost.Trim()
+
+                            Write-Output "Docker username: $env:DOCKER_USER"
+                            Write-Output "Docker engine endpoint: $dockerHost"
+                            Write-Output "Temporary Docker configuration will be used"
+
+                            # Create clean temporary Docker configuration
                             New-Item -ItemType Directory -Path $tempDockerConfig -Force | Out-Null
 
                             $configFile = Join-Path $tempDockerConfig "config.json"
@@ -73,13 +86,9 @@ pipeline {
                                 (New-Object System.Text.UTF8Encoding($false))
                             )
 
-                            Write-Output "===== DOCKER DIAGNOSTICS ====="
-                            Write-Output "Docker username: $env:DOCKER_USER"
-                            Write-Output "Temporary Docker config created"
-                            Write-Output "Docker context: desktop-linux"
-                            Write-Output "Token length: $($env:DOCKER_TOKEN.Length)"
+                            # Safe token fingerprint
+                            Write-Output "Docker token length: $($env:DOCKER_TOKEN.Length)"
 
-                            # Calculate safe token fingerprint
                             $sha = [System.Security.Cryptography.SHA256]::Create()
                             $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:DOCKER_TOKEN)
 
@@ -93,10 +102,10 @@ pipeline {
                             $bytes = $null
                             $hash = $null
 
-                            # Docker login using temporary configuration
+                            # Docker login using direct engine endpoint
                             $psi = New-Object System.Diagnostics.ProcessStartInfo
                             $psi.FileName = "docker.exe"
-                            $psi.Arguments = "--config `"$tempDockerConfig`" --context desktop-linux login --username $env:DOCKER_USER --password-stdin"
+                            $psi.Arguments = "--config `"$tempDockerConfig`" --host `"$dockerHost`" login --username $env:DOCKER_USER --password-stdin"
                             $psi.UseShellExecute = $false
                             $psi.RedirectStandardInput = $true
                             $psi.RedirectStandardOutput = $true
@@ -137,8 +146,8 @@ pipeline {
                                 throw "Docker tag failed"
                             }
 
-                            # Push using the same temporary configuration
-                            docker --config $tempDockerConfig --context desktop-linux push $image
+                            # Push using the same endpoint and temporary config
+                            docker --config $tempDockerConfig --host $dockerHost push $image
 
                             if ($LASTEXITCODE -ne 0) {
                                 throw "Docker push failed"
@@ -147,7 +156,7 @@ pipeline {
                             Write-Output "Docker image pushed successfully!"
                         }
                         finally {
-                            # Remove temporary configuration and credentials
+                            # Remove temporary credentials
                             if (Test-Path $tempDockerConfig) {
                                 Remove-Item $tempDockerConfig -Recurse -Force
                             }
