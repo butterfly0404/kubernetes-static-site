@@ -14,6 +14,10 @@ pipeline {
             steps {
                 powershell '''
                     docker build -t static-website:latest .
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Docker image build failed"
+                    }
                 '''
             }
         }
@@ -25,11 +29,15 @@ pipeline {
 
                     docker run -d -p 8083:80 --name ci-test static-website:latest
 
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Container startup failed"
+                    }
+
                     try {
                         $response = Invoke-WebRequest http://localhost:8083 -UseBasicParsing
 
                         if ($response.StatusCode -ne 200) {
-                            throw "Test failed"
+                            throw "Application test failed"
                         }
 
                         Write-Output "Application test passed!"
@@ -51,19 +59,38 @@ pipeline {
                     )
                 ]) {
                     powershell '''
-                        # Display safe credential information
-                        Write-Output "Docker username received: $env:DOCKER_USER"
+                        Write-Output "===== JENKINS DOCKER ENVIRONMENT ====="
+
+                        Write-Output "Docker username: $env:DOCKER_USER"
+                        Write-Output "USERPROFILE: $env:USERPROFILE"
+                        Write-Output "DOCKER_CONFIG: $env:DOCKER_CONFIG"
+                        Write-Output "DOCKER_CONTEXT: $env:DOCKER_CONTEXT"
+
+                        Write-Output "Docker context:"
+                        docker context show
+
+                        $config = if ($env:DOCKER_CONFIG) {
+                            Join-Path $env:DOCKER_CONFIG "config.json"
+                        } else {
+                            Join-Path $env:USERPROFILE ".docker\config.json"
+                        }
+
+                        Write-Output "Docker config path: $config"
+
+                        if (Test-Path $config) {
+                            $json = Get-Content $config -Raw | ConvertFrom-Json
+
+                            Write-Output "Credential store: $($json.credsStore)"
+                            Write-Output "Credential helpers: $($json.credHelpers | ConvertTo-Json -Compress)"
+                        } else {
+                            Write-Output "Docker config file not found"
+                        }
+
+                        Write-Output "===== END ENVIRONMENT CHECK ====="
+
+                        # Safe credential diagnostics
                         Write-Output "Docker token length: $($env:DOCKER_TOKEN.Length)"
 
-                        if ([string]::IsNullOrWhiteSpace($env:DOCKER_USER)) {
-                            throw "Docker username is missing"
-                        }
-
-                        if ([string]::IsNullOrWhiteSpace($env:DOCKER_TOKEN)) {
-                            throw "Docker token is missing"
-                        }
-
-                        # Calculate SHA-256 fingerprint
                         $sha = [System.Security.Cryptography.SHA256]::Create()
                         $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:DOCKER_TOKEN)
                         $hash = [BitConverter]::ToString(
@@ -76,7 +103,7 @@ pipeline {
                         $bytes = $null
                         $hash = $null
 
-                        # Docker Hub authentication
+                        # Docker Hub login
                         $psi = New-Object System.Diagnostics.ProcessStartInfo
                         $psi.FileName = "docker.exe"
                         $psi.Arguments = "login --username $env:DOCKER_USER --password-stdin"
@@ -110,14 +137,14 @@ pipeline {
 
                         Write-Output "Docker Hub login successful!"
 
-                        # Tag Docker image
+                        # Tag image
                         docker tag static-website:latest "$($env:DOCKER_USER)/static-website:$($env:BUILD_NUMBER)"
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker tag failed"
                         }
 
-                        # Push Docker image
+                        # Push image
                         docker push "$($env:DOCKER_USER)/static-website:$($env:BUILD_NUMBER)"
 
                         if ($LASTEXITCODE -ne 0) {
